@@ -3,20 +3,21 @@ extern crate lazy_static;
 
 use std::env;
 use std::fs::File;
-use std::net::SocketAddr;
+use std::io::Read;
+use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::io::FromRawFd;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use clap::{App, Arg};
-use log::{debug, error, info};
+use log::{debug, error};
 
 use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init_peers_hw_addr};
+
 use crate::error::TapDemoError;
-use crate::eth::EthV2;
+
 use crate::tap::create_tap;
-use std::io::Read;
 
 mod discovery;
 mod dispatch;
@@ -58,7 +59,8 @@ impl FromStr for Peer {
 pub(crate) struct AppState {
     name: String,
     hw_addr: [u8; 6],
-
+    data_sock: UdpSocket,
+    tap_dev: File,
     peers: Vec<Peer>,
 }
 
@@ -117,10 +119,17 @@ fn main() {
     }
     let tap_info = tap_info.unwrap();
 
+    let data_sock = UdpSocket::bind("0.0.0.0:9908").unwrap();
+    data_sock.set_write_timeout(Some(Duration::from_secs(5)));
+
+    let tap_dev: File = unsafe { File::from_raw_fd(tap_info.fd) };
+
     let state = Arc::new(RwLock::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))
             .unwrap_or("peer-01".to_owned()),
+        data_sock,
+        tap_dev,
         hw_addr: tap_info.hw_addr,
         peers: Vec::new(),
     }));
@@ -179,31 +188,31 @@ fn main() {
         }
     }
 
-    let mut buff = vec![0; 1456];
+    let _buff = vec![0; 1456];
     loop {
-        //        let mut tap_file: File = unsafe { File::from_raw_fd(tap_info.fd) };
-        //
-        //        let size = tap_file.read(&mut buff);
-        //
-        //        if size.is_err() {
-        //            continue;
-        //        }
-        //
-        //        let mut dst_mac = [0; 6];
-        //        dst_mac.copy_from_slice(&buff[0..6]);
-        //
-        //        let mut src_mac = [0; 6];
-        //        src_mac.copy_from_slice(&buff[6..12]);
-        //
-        //        let mut proto_type = [0; 2];
-        //        proto_type.copy_from_slice(&buff[12..14]);
-        //
-        //        let eth = EthV2 {
-        //            dst_mac,
-        //            src_mac,
-        //            proto_type: u16::from_be_bytes(proto_type),
-        //            data: buff.clone(),
-        //        };
-        std::thread::sleep(Duration::from_secs(5));
+        let _state = state.clone();
+//        let size = tap_file.read(&mut buff);
+
+//        if size.is_err() {
+//            continue;
+//        }
+//
+//        let mut dst_mac = [0; 6];
+//        dst_mac.copy_from_slice(&buff[0..6]);
+//
+//        let mut src_mac = [0; 6];
+//        src_mac.copy_from_slice(&buff[6..12]);
+//
+//        let mut proto_type = [0; 2];
+//        proto_type.copy_from_slice(&buff[12..14]);
+//
+//        let eth = EthV2 {
+//            dst_mac,
+//            src_mac,
+//            proto_type: u16::from_be_bytes(proto_type),
+//            data: buff.clone(),
+//        };
+//
+//        dispatch_to_peers(state, eth);
     }
 }

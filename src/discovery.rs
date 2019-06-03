@@ -12,7 +12,6 @@ use crate::error::TapDemoError;
 
 use super::{AppState, Peer};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::convert::TryInto;
 
 lazy_static! {
     static ref IPV4: IpAddr = Ipv4Addr::new(224, 0, 0, 100).into();
@@ -54,10 +53,10 @@ fn check_peer(peer: &Peer) -> Result<(), TapDemoError> {
     let msg = Msg {
         inner: ControlMsg::Ping,
     };
-    let result = send_msg(msg, &sock, &peer.ctl_addr.into())?;
+    let _result = send_msg(msg, &sock, &peer.ctl_addr.into())?;
 
     let mut buff = vec![0; 512];
-    let result = sock.recv(&mut buff)?;
+    let _result = sock.recv(&mut buff)?;
 
     let msg: Msg = deserialize(&buff)?;
 
@@ -295,7 +294,7 @@ pub(crate) fn init_peers_hw_addr(state: Arc<RwLock<AppState>>) {
                     }
                 }
             }
-            Err(err) => {
+            Err(_err) => {
                 error!(
                     "error init peer hw_addr for {}, peer not respond",
                     peer.name

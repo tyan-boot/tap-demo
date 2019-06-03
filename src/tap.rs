@@ -1,11 +1,10 @@
 use std::convert::TryInto;
 use std::fs::OpenOptions;
-use std::os::raw::{c_char, c_short, c_uchar};
+use std::os::raw::{c_char, c_short};
 use std::os::unix::io::IntoRawFd;
-use std::thread::sleep;
 use std::time::Duration;
 
-use libc::{ioctl, sockaddr};
+use libc::{ioctl};
 
 static TUN_DEV: &'static str = "/dev/net/tun";
 static IFFTAP: c_short = 2;
