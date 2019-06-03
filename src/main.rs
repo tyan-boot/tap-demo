@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 use std::env;
 use std::fs::File;
 use std::net::SocketAddr;
@@ -178,29 +181,29 @@ fn main() {
 
     let mut buff = vec![0; 1456];
     loop {
-        let mut tap_file: File = unsafe { File::from_raw_fd(tap_info.fd) };
-
-        let size = tap_file.read(&mut buff);
-
-        if size.is_err() {
-            continue;
-        }
-
-        let mut dst_mac = [0; 6];
-        dst_mac.copy_from_slice(&buff[0..6]);
-
-        let mut src_mac = [0; 6];
-        src_mac.copy_from_slice(&buff[6..12]);
-
-        let mut proto_type = [0; 2];
-        proto_type.copy_from_slice(&buff[12..14]);
-
-        let eth = EthV2 {
-            dst_mac,
-            src_mac,
-            proto_type: u16::from_be_bytes(proto_type),
-            data: buff.clone(),
-        };
+        //        let mut tap_file: File = unsafe { File::from_raw_fd(tap_info.fd) };
+        //
+        //        let size = tap_file.read(&mut buff);
+        //
+        //        if size.is_err() {
+        //            continue;
+        //        }
+        //
+        //        let mut dst_mac = [0; 6];
+        //        dst_mac.copy_from_slice(&buff[0..6]);
+        //
+        //        let mut src_mac = [0; 6];
+        //        src_mac.copy_from_slice(&buff[6..12]);
+        //
+        //        let mut proto_type = [0; 2];
+        //        proto_type.copy_from_slice(&buff[12..14]);
+        //
+        //        let eth = EthV2 {
+        //            dst_mac,
+        //            src_mac,
+        //            proto_type: u16::from_be_bytes(proto_type),
+        //            data: buff.clone(),
+        //        };
         std::thread::sleep(Duration::from_secs(5));
     }
 }
