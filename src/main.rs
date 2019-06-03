@@ -1,19 +1,22 @@
+#[macro_use]
+extern crate lazy_static;
+
 use std::env;
 use std::fs::File;
-use std::net::SocketAddr;
-use std::os::unix::io::FromRawFd;
+use std::io::Read;
+use std::net::{SocketAddr, UdpSocket};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use clap::{App, Arg};
-use log::{debug, error, info};
+use log::error;
 
 use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init_peers_hw_addr};
+use crate::dispatch::{dispatch_from_peers, DispatchRoutine};
 use crate::error::TapDemoError;
 use crate::eth::EthV2;
 use crate::tap::create_tap;
-use std::io::Read;
 
 mod discovery;
 mod dispatch;
@@ -55,17 +58,15 @@ impl FromStr for Peer {
 pub(crate) struct AppState {
     name: String,
     hw_addr: [u8; 6],
-
-    peers: Vec<Peer>,
+    data_sock: UdpSocket,
+    tap_dev: File,
+    peers: RwLock<Vec<Peer>>,
 }
 
 impl AppState {
-    pub(crate) fn add_peer(&mut self, peer: Peer) {
-        debug!("adding peer");
-        let p = self
-            .peers
-            .iter_mut()
-            .find(|it| it.ctl_addr.eq(&peer.ctl_addr));
+    pub(crate) fn add_peer(&self, peer: Peer) {
+        let mut peers = self.peers.write().unwrap();
+        let p = peers.iter_mut().find(|it| it.ctl_addr.eq(&peer.ctl_addr));
 
         match p {
             Some(mut p) => {
@@ -73,10 +74,8 @@ impl AppState {
                 p.name = peer.name;
                 p.hw_addr = peer.hw_addr
             }
-            None => self.peers.push(peer),
+            None => peers.push(peer),
         }
-
-        debug!("peers: {:?}", self.peers);
     }
 }
 
@@ -114,13 +113,20 @@ fn main() {
     }
     let tap_info = tap_info.unwrap();
 
-    let state = Arc::new(RwLock::new(AppState {
+    let data_sock = UdpSocket::bind("0.0.0.0:9908").unwrap();
+    data_sock
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    let state = Arc::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))
             .unwrap_or("peer-01".to_owned()),
+        data_sock,
+        tap_dev: tap_info.tap_dev,
         hw_addr: tap_info.hw_addr,
-        peers: Vec::new(),
-    }));
+        peers: RwLock::new(Vec::new()),
+    });
 
     // try init peers
     if let Some(peers_str) = matches.value_of("peers") {
@@ -134,15 +140,14 @@ fn main() {
                 peer.unwrap()
             })
             .collect();
-
-        debug!("{:#?}", &peers);
-
-        state.write().unwrap().peers.extend(peers);
+        state.peers.write().unwrap().extend(peers);
     }
 
-    if !is_auto && state.read().unwrap().peers.is_empty() {
-        error!("peers is empty and `auto` is not set");
-        return;
+    {
+        if !is_auto && state.peers.read().unwrap().is_empty() {
+            error!("peers is empty and `auto` is not set");
+            return;
+        }
     }
 
     // heartbeats thread
@@ -166,21 +171,26 @@ fn main() {
     // init peers hw addr
     {
         let state = state.clone();
-        let is_empty = {
-            let state_guard = state.write().unwrap();
-            state_guard.peers.is_empty()
-        };
+        let is_empty = { state.peers.read().unwrap().is_empty() };
 
         if !is_empty {
             init_peers_hw_addr(state);
         }
     }
 
-    let mut buff = vec![0; 1456];
-    loop {
-        let mut tap_file: File = unsafe { File::from_raw_fd(tap_info.fd) };
+    // dispatch from peers
+    {
+        let state = state.clone();
+        std::thread::spawn(move || dispatch_from_peers(state));
+    }
 
-        let size = tap_file.read(&mut buff);
+    let mut buff = vec![0; 1500];
+    let dispatch_routine = DispatchRoutine(state.clone());
+
+    loop {
+        let mut tap_dev = &state.tap_dev;
+
+        let size = tap_dev.read(&mut buff);
 
         if size.is_err() {
             continue;
@@ -201,6 +211,12 @@ fn main() {
             proto_type: u16::from_be_bytes(proto_type),
             data: buff.clone(),
         };
-        std::thread::sleep(Duration::from_secs(5));
+
+        let result = dispatch_routine.dispatch_to_peers(eth);
+
+        match result {
+            Err(e) => error!("error dispatch to peers, {:?}", e),
+            _ => {}
+        }
     }
 }
