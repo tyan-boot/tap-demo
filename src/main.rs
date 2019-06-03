@@ -117,7 +117,7 @@ fn main() {
     data_sock
         .set_write_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    
+
     let state = Arc::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))
@@ -192,19 +192,18 @@ fn main() {
 
         let size = tap_dev.read(&mut buff);
 
-        dbg!(&size);
         if size.is_err() {
             continue;
         }
 
         let mut dst_mac = [0; 6];
-        dst_mac.copy_from_slice(&buff[4..][0..6]);
+        dst_mac.copy_from_slice(&buff[0..6]);
 
         let mut src_mac = [0; 6];
-        src_mac.copy_from_slice(&buff[4..][6..12]);
+        src_mac.copy_from_slice(&buff[6..12]);
 
         let mut proto_type = [0; 2];
-        proto_type.copy_from_slice(&buff[4..][12..14]);
+        proto_type.copy_from_slice(&buff[12..14]);
 
         let eth = EthV2 {
             dst_mac,
