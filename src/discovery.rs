@@ -64,6 +64,8 @@ fn check_peer(peer: &Peer) -> Result<(), TapDemoError> {
         return Ok(());
     }
 
+    debug!("peer lost!");
+
     Err(TapDemoError::PeerLost)
 }
 
@@ -92,10 +94,10 @@ pub(crate) fn heartbeats_thread(state: Arc<AppState>) -> JoinHandle<()> {
         {
             let mut peers = state.peers.write().unwrap();
 
-            peers.retain(|peer| check_peer(&peer).is_ok());
+            peers.retain(|peer| !check_peer(&peer).is_ok());
         }
 
-        std::thread::sleep(Duration::from_secs(15));
+        std::thread::sleep(Duration::from_secs(120));
     })
 }
 
@@ -112,13 +114,11 @@ pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
                 };
                 let req = serialize(&req).unwrap();
 
-                dbg!(&req);
-
                 sock.send_to(
                     req.as_slice(),
                     &SockAddr::from(SocketAddr::new(*IPV4, 9909)),
                 )
-                .unwrap();
+                    .unwrap();
 
                 let mut buf = vec![0; 512];
 
@@ -134,7 +134,6 @@ pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
                             }
 
                             let msg: Msg = msg.unwrap();
-                            debug!("msg reply {:#?}", msg);
 
                             match msg.inner {
                                 ControlMsg::DiscoveryReply(reply) => {
@@ -172,15 +171,17 @@ pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
                 }
             }
 
-            std::thread::sleep(Duration::from_secs(15));
+            std::thread::sleep(Duration::from_secs(60));
         }
     })
 }
 
 pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
+    debug!("control_thread start");
+
     std::thread::spawn(move || {
         let sock = new_socket().unwrap();
-        let addr = SocketAddr::new(*IPV4, 9909);
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9909);
 
         match *IPV4 {
             IpAddr::V4(ref ipv4) => {
@@ -201,10 +202,6 @@ pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
                 Ok((_size, addr)) => {
                     let msg = deserialize(&buff);
                     let msg: Msg = msg.unwrap();
-
-                    dbg!(&addr);
-
-                    debug!("msg recv {:#?}", msg);
 
                     match msg.inner {
                         ControlMsg::DiscoveryRequest => {

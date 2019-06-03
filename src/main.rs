@@ -14,10 +14,8 @@ use clap::{App, Arg};
 use log::{debug, error};
 
 use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init_peers_hw_addr};
-
+use crate::dispatch::{dispatch_from_peers, DispatchRoutine};
 use crate::error::TapDemoError;
-
-use crate::dispatch::dispatch_to_peers;
 use crate::eth::EthV2;
 use crate::tap::create_tap;
 
@@ -68,9 +66,7 @@ pub(crate) struct AppState {
 
 impl AppState {
     pub(crate) fn add_peer(&self, peer: Peer) {
-        debug!("adding peer");
         let mut peers = self.peers.write().unwrap();
-
         let p = peers.iter_mut().find(|it| it.ctl_addr.eq(&peer.ctl_addr));
 
         match p {
@@ -81,8 +77,6 @@ impl AppState {
             }
             None => peers.push(peer),
         }
-
-        debug!("peers: {:?}", peers);
     }
 }
 
@@ -125,14 +119,14 @@ fn main() {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .unwrap();
 
-    let tap_dev: File = unsafe { File::from_raw_fd(tap_info.fd) };
+//    let tap_dev: File = unsafe { File::from_raw_fd(tap_info.fd) };
 
     let state = Arc::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))
             .unwrap_or("peer-01".to_owned()),
         data_sock,
-        tap_dev,
+        tap_dev: tap_info.tap_dev,
         hw_addr: tap_info.hw_addr,
         peers: RwLock::new(Vec::new()),
     });
@@ -149,9 +143,6 @@ fn main() {
                 peer.unwrap()
             })
             .collect();
-
-        debug!("{:#?}", &peers);
-
         state.peers.write().unwrap().extend(peers);
     }
 
@@ -190,24 +181,33 @@ fn main() {
         }
     }
 
-    let mut buff = vec![0; 1456];
+    // dispatch from peers
+    {
+        let state = state.clone();
+        std::thread::spawn(move || dispatch_from_peers(state));
+    }
+
+    let mut buff = vec![0; 1500];
+    let dispatch_routine = DispatchRoutine(state.clone());
+
     loop {
         let mut tap_dev = &state.tap_dev;
 
         let size = tap_dev.read(&mut buff);
 
+        dbg!(&size);
         if size.is_err() {
             continue;
         }
 
         let mut dst_mac = [0; 6];
-        dst_mac.copy_from_slice(&buff[0..6]);
+        dst_mac.copy_from_slice(&buff[4..][0..6]);
 
         let mut src_mac = [0; 6];
-        src_mac.copy_from_slice(&buff[6..12]);
+        src_mac.copy_from_slice(&buff[4..][6..12]);
 
         let mut proto_type = [0; 2];
-        proto_type.copy_from_slice(&buff[12..14]);
+        proto_type.copy_from_slice(&buff[4..][12..14]);
 
         let eth = EthV2 {
             dst_mac,
@@ -216,7 +216,7 @@ fn main() {
             data: buff.clone(),
         };
 
-        let result = dispatch_to_peers(state.clone(), eth);
+        let result = dispatch_routine.dispatch_to_peers(eth);
 
         match result {
             Err(e) => error!("error dispatch to peers, {:?}", e),

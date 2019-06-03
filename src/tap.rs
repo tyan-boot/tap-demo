@@ -1,7 +1,7 @@
 use std::convert::TryInto;
-use std::fs::OpenOptions;
+use std::fs::{OpenOptions, File};
 use std::os::raw::{c_char, c_short};
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{IntoRawFd, FromRawFd};
 use std::time::Duration;
 
 use libc::ioctl;
@@ -21,7 +21,7 @@ struct IfReq {
 
 #[derive(Debug)]
 pub struct TapInfo {
-    pub fd: i32,
+    pub tap_dev: File,
     pub hw_addr: [u8; 6],
 }
 
@@ -60,20 +60,19 @@ impl IfReq {
 }
 
 pub fn create_tap(name: &str) -> Result<TapInfo, crate::error::TapDemoError> {
-    let tun_dev = OpenOptions::new().write(true).open(TUN_DEV)?;
+    let tun_dev = OpenOptions::new().write(true).read(true).open(TUN_DEV)?;
     let mut ifreq = IfReq::with_name(name);
     ifreq.if_flags(IFFTAP | IFF_NO_PI);
 
     unsafe {
         let fd = tun_dev.into_raw_fd();
         let mut rc = ioctl(fd, TUNSETIFF, &ifreq);
-
         if rc != 0 {
             return Err(crate::error::TapDemoError::TapCreateError(rc));
         }
 
         // fixme: 没有 sleep 的话， SIOCGIFHWADDR 获取到的 hwaddr 是一个随机的错误值
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(1000));
 
         rc = ioctl(fd, SIOCGIFHWADDR, &ifreq);
 
@@ -83,7 +82,7 @@ pub fn create_tap(name: &str) -> Result<TapInfo, crate::error::TapDemoError> {
 
         let hw_addr = ifreq.if_hwaddr();
 
-        Ok(TapInfo { fd, hw_addr })
+        Ok(TapInfo { tap_dev: File::from_raw_fd(fd), hw_addr })
     }
 }
 
