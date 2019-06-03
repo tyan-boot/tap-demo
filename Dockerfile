@@ -22,4 +22,6 @@ WORKDIR /code
 
 COPY --from=build /build/tap-demo/target/release/tap-demo /code/tap-demo
 
+RUN apt update && apt install -y iproute2 iputils-ping
+
 ENTRYPOINT ["./tap-demo"]
