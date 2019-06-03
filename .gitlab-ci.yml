@@ -1,0 +1,32 @@
+stages:
+  - build
+  - build-docker
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - /usr/local/cargo/registry
+    - target/release
+    - target/debug
+
+build:
+  image: rust:latest
+  stage: build
+  script:
+    - cargo build --release
+  artifacts:
+    paths:
+      - target/release/tap-demo
+    expire_in: 7 days
+
+build docker:
+  stage: build-docker
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker login -u "$CI_REGISTER_USER" -p "$CI_REGISTER_PASSWORD" $CI_REGISTRY
+    - docker build --pull -t "$CI_REGISTER_IMAGE"
+    - docker push "$CI_REGISTER_IMAGE"
+  only:
+    - master
