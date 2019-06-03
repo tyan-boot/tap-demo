@@ -118,7 +118,7 @@ pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
                     req.as_slice(),
                     &SockAddr::from(SocketAddr::new(*IPV4, 9909)),
                 )
-                    .unwrap();
+                .unwrap();
 
                 let mut buf = vec![0; 512];
 

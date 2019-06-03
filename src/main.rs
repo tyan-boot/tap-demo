@@ -5,13 +5,12 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::net::{SocketAddr, UdpSocket};
-use std::os::unix::io::FromRawFd;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use clap::{App, Arg};
-use log::{debug, error};
+use log::error;
 
 use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init_peers_hw_addr};
 use crate::dispatch::{dispatch_from_peers, DispatchRoutine};
@@ -118,9 +117,7 @@ fn main() {
     data_sock
         .set_write_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-
-//    let tap_dev: File = unsafe { File::from_raw_fd(tap_info.fd) };
-
+    
     let state = Arc::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))

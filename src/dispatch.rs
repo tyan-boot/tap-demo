@@ -4,7 +4,7 @@ use super::error::TapDemoError;
 use super::eth::EthV2;
 use super::AppState;
 
-use log::{error, debug};
+use log::error;
 use std::io::Write;
 
 pub(crate) struct DispatchRoutine(pub(crate) Arc<AppState>);
@@ -39,14 +39,13 @@ impl DispatchRoutine {
     }
 }
 
-
 pub(crate) fn dispatch_from_peers(state: Arc<AppState>) {
     let data_sock = &state.data_sock;
     let mut buff = vec![0; 1500];
     let mut tap_dev = &state.tap_dev;
 
     loop {
-        let result = data_sock.recv(&mut buff);
+        let _result = data_sock.recv(&mut buff);
         let _result = tap_dev.write(&buff);
     }
 }
