@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -48,7 +48,7 @@ fn send_msg(msg: Msg, sock: &Socket, addr: &SockAddr) -> std::io::Result<usize> 
 
 fn check_peer(peer: &Peer) -> Result<(), TapDemoError> {
     let sock = new_sender()?;
-    sock.set_write_timeout(Some(Duration::from_secs(5)));
+    sock.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let msg = Msg {
         inner: ControlMsg::Ping,
@@ -85,21 +85,21 @@ fn new_sender() -> std::io::Result<Socket> {
     Ok(socket)
 }
 
-pub(crate) fn heartbeats_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
+pub(crate) fn heartbeats_thread(state: Arc<AppState>) -> JoinHandle<()> {
     debug!("heartbeats_thread start");
 
     std::thread::spawn(move || loop {
         {
-            let mut state = state.write().unwrap();
+            let mut peers = state.peers.write().unwrap();
 
-            state.peers.retain(|peer| check_peer(&peer).is_ok());
+            peers.retain(|peer| check_peer(&peer).is_ok());
         }
 
         std::thread::sleep(Duration::from_secs(15));
     })
 }
 
-pub(crate) fn discovery_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
+pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
     debug!("discovery_thread start");
 
     std::thread::spawn(move || {
@@ -138,8 +138,6 @@ pub(crate) fn discovery_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
 
                             match msg.inner {
                                 ControlMsg::DiscoveryReply(reply) => {
-                                    let mut state = state.write().unwrap();
-
                                     if reply.name == state.name {
                                         continue;
                                     }
@@ -179,14 +177,15 @@ pub(crate) fn discovery_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
     })
 }
 
-pub(crate) fn control_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
+pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let sock = new_socket().unwrap();
         let addr = SocketAddr::new(*IPV4, 9909);
 
         match *IPV4 {
             IpAddr::V4(ref ipv4) => {
-                sock.join_multicast_v4(ipv4, &Ipv4Addr::new(0, 0, 0, 0));
+                sock.join_multicast_v4(ipv4, &Ipv4Addr::new(0, 0, 0, 0))
+                    .unwrap();
             }
             IpAddr::V6(_) => unreachable!(),
         }
@@ -209,7 +208,6 @@ pub(crate) fn control_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
 
                     match msg.inner {
                         ControlMsg::DiscoveryRequest => {
-                            let state = state.read().unwrap();
                             let msg_reply = Msg {
                                 inner: ControlMsg::DiscoveryReply(MsgDiscoveryReply {
                                     name: state.name.clone(),
@@ -217,22 +215,21 @@ pub(crate) fn control_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
                                 }),
                             };
 
-                            send_msg(msg_reply, &sock, &addr);
+                            let _ = send_msg(msg_reply, &sock, &addr);
                         }
                         ControlMsg::HwAddrRequest => {
-                            let state = state.read().unwrap();
                             let msg_reply = Msg {
                                 inner: ControlMsg::HwAddrReply(state.hw_addr),
                             };
 
-                            send_msg(msg_reply, &sock, &addr);
+                            let _ = send_msg(msg_reply, &sock, &addr);
                         }
                         ControlMsg::Ping => {
                             let msg_reply = Msg {
                                 inner: ControlMsg::Pong,
                             };
 
-                            send_msg(msg_reply, &sock, &addr);
+                            let _ = send_msg(msg_reply, &sock, &addr);
                         }
                         _ => unreachable!(),
                     }
@@ -248,18 +245,17 @@ pub(crate) fn control_thread(state: Arc<RwLock<AppState>>) -> JoinHandle<()> {
     })
 }
 
-pub(crate) fn init_peers_hw_addr(state: Arc<RwLock<AppState>>) {
+pub(crate) fn init_peers_hw_addr(state: Arc<AppState>) {
     debug!("init peers hw addr...");
+    let mut peers = state.peers.write().unwrap();
 
-    let mut state_guard = state.write().unwrap();
-
-    for peer in &mut state_guard.peers {
+    for peer in &mut *peers {
         if peer.hw_addr != [0; 6] {
             continue;
         }
 
         let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
-        sock.set_read_timeout(Some(Duration::from_secs(5)));
+        sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
         let msg = Msg {
             inner: ControlMsg::HwAddrRequest,
@@ -304,7 +300,7 @@ pub(crate) fn init_peers_hw_addr(state: Arc<RwLock<AppState>>) {
     }
 
     // check whether all peers are initialized
-    let first_uninitialized = state_guard.peers.iter().find(|it| it.hw_addr == [0; 6]);
+    let first_uninitialized = peers.iter().find(|it| it.hw_addr == [0; 6]);
 
     if first_uninitialized.is_some() {
         // schedule next init

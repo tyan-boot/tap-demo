@@ -4,7 +4,7 @@ use std::os::raw::{c_char, c_short};
 use std::os::unix::io::IntoRawFd;
 use std::time::Duration;
 
-use libc::{ioctl};
+use libc::ioctl;
 
 static TUN_DEV: &'static str = "/dev/net/tun";
 static IFFTAP: c_short = 2;

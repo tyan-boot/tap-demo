@@ -17,6 +17,8 @@ use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init
 
 use crate::error::TapDemoError;
 
+use crate::dispatch::dispatch_to_peers;
+use crate::eth::EthV2;
 use crate::tap::create_tap;
 
 mod discovery;
@@ -61,16 +63,15 @@ pub(crate) struct AppState {
     hw_addr: [u8; 6],
     data_sock: UdpSocket,
     tap_dev: File,
-    peers: Vec<Peer>,
+    peers: RwLock<Vec<Peer>>,
 }
 
 impl AppState {
-    pub(crate) fn add_peer(&mut self, peer: Peer) {
+    pub(crate) fn add_peer(&self, peer: Peer) {
         debug!("adding peer");
-        let p = self
-            .peers
-            .iter_mut()
-            .find(|it| it.ctl_addr.eq(&peer.ctl_addr));
+        let mut peers = self.peers.write().unwrap();
+
+        let p = peers.iter_mut().find(|it| it.ctl_addr.eq(&peer.ctl_addr));
 
         match p {
             Some(mut p) => {
@@ -78,10 +79,10 @@ impl AppState {
                 p.name = peer.name;
                 p.hw_addr = peer.hw_addr
             }
-            None => self.peers.push(peer),
+            None => peers.push(peer),
         }
 
-        debug!("peers: {:?}", self.peers);
+        debug!("peers: {:?}", peers);
     }
 }
 
@@ -120,19 +121,21 @@ fn main() {
     let tap_info = tap_info.unwrap();
 
     let data_sock = UdpSocket::bind("0.0.0.0:9908").unwrap();
-    data_sock.set_write_timeout(Some(Duration::from_secs(5)));
+    data_sock
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
 
     let tap_dev: File = unsafe { File::from_raw_fd(tap_info.fd) };
 
-    let state = Arc::new(RwLock::new(AppState {
+    let state = Arc::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))
             .unwrap_or("peer-01".to_owned()),
         data_sock,
         tap_dev,
         hw_addr: tap_info.hw_addr,
-        peers: Vec::new(),
-    }));
+        peers: RwLock::new(Vec::new()),
+    });
 
     // try init peers
     if let Some(peers_str) = matches.value_of("peers") {
@@ -149,12 +152,14 @@ fn main() {
 
         debug!("{:#?}", &peers);
 
-        state.write().unwrap().peers.extend(peers);
+        state.peers.write().unwrap().extend(peers);
     }
 
-    if !is_auto && state.read().unwrap().peers.is_empty() {
-        error!("peers is empty and `auto` is not set");
-        return;
+    {
+        if !is_auto && state.peers.read().unwrap().is_empty() {
+            error!("peers is empty and `auto` is not set");
+            return;
+        }
     }
 
     // heartbeats thread
@@ -178,41 +183,44 @@ fn main() {
     // init peers hw addr
     {
         let state = state.clone();
-        let is_empty = {
-            let state_guard = state.write().unwrap();
-            state_guard.peers.is_empty()
-        };
+        let is_empty = { state.peers.read().unwrap().is_empty() };
 
         if !is_empty {
             init_peers_hw_addr(state);
         }
     }
 
-    let _buff = vec![0; 1456];
+    let mut buff = vec![0; 1456];
     loop {
-        let _state = state.clone();
-//        let size = tap_file.read(&mut buff);
+        let mut tap_dev = &state.tap_dev;
 
-//        if size.is_err() {
-//            continue;
-//        }
-//
-//        let mut dst_mac = [0; 6];
-//        dst_mac.copy_from_slice(&buff[0..6]);
-//
-//        let mut src_mac = [0; 6];
-//        src_mac.copy_from_slice(&buff[6..12]);
-//
-//        let mut proto_type = [0; 2];
-//        proto_type.copy_from_slice(&buff[12..14]);
-//
-//        let eth = EthV2 {
-//            dst_mac,
-//            src_mac,
-//            proto_type: u16::from_be_bytes(proto_type),
-//            data: buff.clone(),
-//        };
-//
-//        dispatch_to_peers(state, eth);
+        let size = tap_dev.read(&mut buff);
+
+        if size.is_err() {
+            continue;
+        }
+
+        let mut dst_mac = [0; 6];
+        dst_mac.copy_from_slice(&buff[0..6]);
+
+        let mut src_mac = [0; 6];
+        src_mac.copy_from_slice(&buff[6..12]);
+
+        let mut proto_type = [0; 2];
+        proto_type.copy_from_slice(&buff[12..14]);
+
+        let eth = EthV2 {
+            dst_mac,
+            src_mac,
+            proto_type: u16::from_be_bytes(proto_type),
+            data: buff.clone(),
+        };
+
+        let result = dispatch_to_peers(state.clone(), eth);
+
+        match result {
+            Err(e) => error!("error dispatch to peers, {:?}", e),
+            _ => {}
+        }
     }
 }
