@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use super::error::TapDemoError;
-use super::eth::EthV2;
-use super::AppState;
+use crate::app::AppState;
+use crate::error::TapDemoError;
+use crate::eth::EthV2;
 
 use log::error;
 use std::io::Write;

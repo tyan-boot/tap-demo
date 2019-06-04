@@ -6,6 +6,7 @@ pub enum TapDemoError {
     PeerParseError,
     PeerAddressParseError(String),
     TapSetupError,
+    PeerEmpty,
 
     PeerLost,
     MsgDeserializeError(bincode::Error),
@@ -28,3 +29,5 @@ impl From<bincode::Error> for TapDemoError {
         TapDemoError::MsgDeserializeError(err)
     }
 }
+
+pub type AppResult<T> = Result<T, TapDemoError>;

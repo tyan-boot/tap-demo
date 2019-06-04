@@ -8,10 +8,12 @@ use bincode::{deserialize, serialize};
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
 
-use crate::error::TapDemoError;
+use crate::app::AppState;
+use crate::error::{AppResult, TapDemoError};
+use crate::peer::Peer;
 
-use super::{AppState, Peer};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::convert::TryInto;
 
 lazy_static! {
     static ref IPV4: IpAddr = Ipv4Addr::new(224, 0, 0, 100).into();
@@ -242,6 +244,35 @@ pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
     })
 }
 
+pub(crate) fn init_peer_hw_addr(peer: &mut Peer) -> AppResult<()> {
+    if peer.hw_addr != [0; 6] {
+        return Ok(());
+    }
+
+    let sock = new_sender()?;
+    sock.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+    let msg = Msg {
+        inner: ControlMsg::HwAddrRequest,
+    };
+
+    let peer_ctl_addr = peer.ctl_addr.clone();
+    send_msg(msg, &sock, &SockAddr::from(peer_ctl_addr))?;
+
+    let mut buff = vec![0; 512];
+    let _size = sock.recv(&mut buff)?;
+
+    let msg: Msg = deserialize(&buff)?;
+
+    match msg.inner {
+        ControlMsg::HwAddrReply(hw_addr) => {
+            peer.hw_addr = hw_addr;
+            Ok(())
+        }
+        _ => Err(TapDemoError::GetHWAddrError),
+    }
+}
+
 pub(crate) fn init_peers_hw_addr(state: Arc<AppState>) {
     debug!("init peers hw addr...");
     let mut peers = state.peers.write().unwrap();
@@ -251,49 +282,7 @@ pub(crate) fn init_peers_hw_addr(state: Arc<AppState>) {
             continue;
         }
 
-        let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
-        sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-
-        let msg = Msg {
-            inner: ControlMsg::HwAddrRequest,
-        };
-        let msg = serialize(&msg).unwrap();
-
-        sock.send_to(&msg, &peer.ctl_addr).unwrap();
-
-        let mut buff = vec![0; 512];
-        let msg = sock.recv(&mut buff);
-
-        match msg {
-            Ok(_size) => {
-                let msg = deserialize(&buff);
-
-                if msg.is_err() {
-                    error!(
-                        "error init peer hw_addr for {}, deserialize msg failed",
-                        peer.name
-                    );
-                    continue;
-                }
-
-                let msg: Msg = msg.unwrap();
-
-                match msg.inner {
-                    ControlMsg::HwAddrReply(hw_addr) => {
-                        peer.hw_addr = hw_addr;
-                    }
-                    _ => {
-                        error!("error init peer hw_addr for {}, msg type mismatch, expect HwAddrReply, got {:?}", peer.name, msg.inner);
-                    }
-                }
-            }
-            Err(_err) => {
-                error!(
-                    "error init peer hw_addr for {}, peer not respond",
-                    peer.name
-                );
-            }
-        }
+        let _result = init_peer_hw_addr(peer);
     }
 
     // check whether all peers are initialized
