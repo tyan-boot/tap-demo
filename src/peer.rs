@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,12 @@ impl FromStr for Peer {
             return Err(TapDemoError::PeerParseError);
         }
 
-        let ctl_addr: SocketAddr = pairs[1].parse()?;
+        let socket_addrs = pairs[1].to_socket_addrs()?;
+
+        let ctl_addr = socket_addrs.into_iter().find(|it| {
+            it.is_ipv4()
+        }).ok_or(TapDemoError::PeerParseError)?;
+
         let mut data_addr = ctl_addr.clone();
         data_addr.set_port(data_addr.port() - 1);
 
