@@ -1,6 +1,6 @@
 [package]
 name = "tap-demo"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Tyan Boot <tyanboot@outlook.com>"]
 edition = "2018"
 
@@ -16,3 +16,4 @@ serde_derive = "^1.0"
 bincode = "^1.1"
 socket2 = "0.3.9"
 lazy_static = "^1.3.0"
+prettytable-rs = "^0.8"

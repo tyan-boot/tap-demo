@@ -28,3 +28,5 @@ impl From<bincode::Error> for TapDemoError {
         TapDemoError::MsgDeserializeError(err)
     }
 }
+
+pub type AppResult<T> = Result<T, TapDemoError>;
