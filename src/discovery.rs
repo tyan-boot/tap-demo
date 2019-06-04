@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bincode::{deserialize, serialize};
 use lazy_static::lazy_static;
-use log::{debug, error};
+use log::debug;
 
 use crate::app::AppState;
 use crate::error::{AppResult, TapDemoError};
@@ -73,85 +73,87 @@ pub(crate) fn heartbeats_thread(state: Arc<AppState>) -> JoinHandle<()> {
         {
             let mut peers = state.peers.write().unwrap();
 
-            peers.retain(|peer| !check_peer(&peer).is_ok());
+            peers.retain(|peer| check_peer(&peer).is_ok());
         }
 
         std::thread::sleep(Duration::from_secs(120));
     })
 }
 
-pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
-    debug!("discovery_thread start");
+pub(crate) fn scan_node(state: Arc<AppState>) -> AppResult<Vec<Peer>> {
+    let sock = new_sender()?;
+    let mut peers = Vec::new();
 
-    std::thread::spawn(move || {
-        loop {
-            {
-                let sock = new_sender().unwrap();
+    let req = Msg {
+        inner: ControlMsg::DiscoveryRequest,
+    };
+    let req = serialize(&req)?;
 
-                let req = Msg {
-                    inner: ControlMsg::DiscoveryRequest,
-                };
-                let req = serialize(&req).unwrap();
+    sock.send_to(&req, &SockAddr::from(SocketAddr::new(*IPV4, 9909)))?;
 
-                sock.send_to(
-                    req.as_slice(),
-                    &SockAddr::from(SocketAddr::new(*IPV4, 9909)),
-                )
-                .unwrap();
+    let mut buff = vec![0; 512];
 
-                let mut buf = vec![0; 512];
+    'recv: loop {
+        let size_and_addr = sock.recv_from(&mut buff);
 
-                'recv: loop {
-                    let size_and_addr = sock.recv_from(&mut buf);
+        match size_and_addr {
+            Ok((_size, addr)) => {
+                let msg: Msg = deserialize(&buff)?;
 
-                    match size_and_addr {
-                        Ok((_size, addr)) => {
-                            let msg = deserialize(&buf);
-                            if msg.is_err() {
-                                error!("error parse peer info, ignore");
-                                continue 'recv;
-                            }
-
-                            let msg: Msg = msg.unwrap();
-
-                            match msg.inner {
-                                ControlMsg::DiscoveryReply(reply) => {
-                                    if reply.name == state.name {
-                                        continue;
-                                    }
-
-                                    let mut data_addr = SocketAddr::V4(addr.as_inet().unwrap());
-                                    data_addr.set_port(data_addr.port() - 1);
-
-                                    let peer = Peer {
-                                        name: reply.name,
-                                        ctl_addr: SocketAddr::V4(addr.as_inet().unwrap()),
-                                        data_addr,
-                                        hw_addr: reply.hw_addr,
-                                    };
-
-                                    state.add_peer(peer);
-                                }
-                                _ => unreachable!(),
-                            }
+                match msg.inner {
+                    ControlMsg::DiscoveryReply(reply) => {
+                        if reply.name == state.name {
+                            continue;
                         }
-                        Err(err) => {
-                            match err.kind() {
-                                std::io::ErrorKind::WouldBlock => {
-                                    // stop recv, and wait 15 sec for next round
-                                    break 'recv;
-                                }
-                                _ => {
-                                    // todo: ignore or panic
-                                }
-                            }
-                        }
+
+                        let mut data_addr = SocketAddr::V4(addr.as_inet().unwrap());
+                        data_addr.set_port(data_addr.port() - 1);
+
+                        let peer = Peer {
+                            name: reply.name,
+                            ctl_addr: SocketAddr::V4(addr.as_inet().unwrap()),
+                            data_addr,
+                            hw_addr: reply.hw_addr,
+                        };
+
+                        peers.push(peer);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Err(err) => {
+                match err.kind() {
+                    std::io::ErrorKind::WouldBlock => {
+                        // stop recv, and wait 15 sec for next round
+                        break 'recv;
+                    }
+                    _ => {
+                        // todo: ignore or panic
                     }
                 }
             }
-
-            std::thread::sleep(Duration::from_secs(60));
         }
+    }
+
+    Ok(peers)
+}
+
+pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
+    debug!("discovery_thread start");
+
+    std::thread::spawn(move || loop {
+        {
+            let peers = {
+                let state = Arc::clone(&state);
+                scan_node(state)
+            };
+
+            if let Ok(peers) = peers {
+                state.add_peers(peers);
+            }
+        }
+
+        std::thread::sleep(Duration::from_secs(60));
     })
 }
 

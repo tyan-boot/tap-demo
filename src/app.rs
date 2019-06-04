@@ -39,6 +39,12 @@ impl AppState {
         }
     }
 
+    pub(crate) fn add_peers(&self, peers: Vec<Peer>) {
+        for peer in peers {
+            self.add_peer(peer);
+        }
+    }
+
     pub(crate) fn remove_peer(&self, name: Option<String>, addr: Option<IpAddr>) {
         let mut peers = self.peers.write().unwrap();
 
@@ -167,7 +173,7 @@ pub(crate) fn run(args: &ArgMatches) -> AppResult<()> {
             dst_mac,
             src_mac,
             proto_type: u16::from_be_bytes(proto_type),
-            data: buff.clone(),
+            data: &buff,
         };
 
         let result = dispatch_routine.dispatch_to_peers(eth);
