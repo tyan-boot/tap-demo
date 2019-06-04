@@ -2,21 +2,24 @@ stages:
   - build
   - build-docker
 
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/cargo
+
 cache:
   key: ${CI_COMMIT_REF_SLUG}
   paths:
-    - /usr/local/cargo/registry
-    - target/release
-    - target/debug
+    - cargo
+    - target
 
 build:
   image: rust:latest
   stage: build
   script:
     - cargo build --release
+    - mv target/release/tap-demo ./
   artifacts:
     paths:
-      - target/release/tap-demo
+      - tap-demo
     expire_in: 7 days
 
 build docker:
