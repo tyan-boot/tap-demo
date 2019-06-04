@@ -1,31 +1,26 @@
-#[macro_use]
-extern crate lazy_static;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
-use std::env;
-use std::fs::File;
-use std::io::Read;
-use std::net::{SocketAddr, UdpSocket};
-use std::str::FromStr;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
-
+use bincode::deserialize;
 use clap::{App, Arg, SubCommand};
-use log::error;
+use log::{error, info};
+use prettytable::{cell, row, Table};
+use socket2::SockAddr;
 
 use crate::app::run;
-use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init_peers_hw_addr};
-use crate::dispatch::{dispatch_from_peers, DispatchRoutine};
+use crate::discovery::{new_sender, send_msg};
 use crate::error::TapDemoError;
-use crate::eth::EthV2;
-use crate::tap::create_tap;
-use std::ptr::NonNull;
-use std::thread::JoinHandle;
+use crate::msg::{ControlMsg, Msg};
+use crate::peer::Peer;
+
+use std::time::Duration;
 
 mod app;
+mod control;
 mod discovery;
 mod dispatch;
 mod error;
 mod eth;
+mod msg;
 mod peer;
 mod tap;
 
@@ -38,7 +33,7 @@ fn main() {
         .about("tap tunnel via udp")
         .subcommand(
             SubCommand::with_name("start")
-                .help("start main loop")
+                .about("start main loop")
                 .arg(
                     Arg::with_name("peers")
                         .help("peers address, eg, peer1=10.0.0.1,peer2=10.0.0.2")
@@ -56,14 +51,142 @@ fn main() {
         )
         .subcommand(
             SubCommand::with_name("peers")
-                .help("peers manage")
-                .subcommand(SubCommand::with_name("list").help("list peers"))
-                .subcommand(SubCommand::with_name("add").help("add peer")),
+                .about("peers manage")
+                .subcommand(SubCommand::with_name("list").about("list peers"))
+                .subcommand(
+                    SubCommand::with_name("add")
+                        .about("add peer")
+                        .arg(
+                            Arg::with_name("peer name")
+                                .takes_value(true)
+                                .required(true)
+                                .help("eg, peer-01"),
+                        )
+                        .arg(
+                            Arg::with_name("peer address")
+                                .takes_value(true)
+                                .required(true)
+                                .help("eg, 10.0.0.1:9909"),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("remove")
+                        .about("remove peer")
+                        .arg(
+                            Arg::with_name("peer name")
+                                .short("n")
+                                .long("name")
+                                .help("peer name")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("peer ip address")
+                                .short("h")
+                                .long("host")
+                                .help("peer ip address")
+                                .takes_value(true),
+                        ),
+                ),
         )
         .get_matches();
 
     if let Some(arg) = matches.subcommand_matches("start") {
         run(arg);
         return;
+    }
+
+    if let Some(peers_cmd) = matches.subcommand_matches("peers") {
+        let ctl_addr = SockAddr::from(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9909));
+        let sock = new_sender().unwrap();
+
+        if let Some(add_peer) = peers_cmd.subcommand_matches("add") {
+            let peer_name = add_peer.value_of("peer name").unwrap();
+            let peer_address = add_peer.value_of("peer address").unwrap();
+
+            let peer: Result<Peer, TapDemoError> =
+                format!("{}={}", peer_name, peer_address).parse();
+
+            match peer {
+                Ok(peer) => {
+                    let msg = Msg {
+                        inner: ControlMsg::AddPeerRequest(peer),
+                    };
+
+                    let _ = send_msg(msg, &sock, &ctl_addr);
+
+                    let mut buff = vec![0; 512];
+                    sock.set_read_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    let _ = sock.recv(&mut buff).unwrap();
+
+                    let msg: Msg = deserialize(&buff).unwrap();
+
+                    match msg.inner {
+                        ControlMsg::AddPeerReply(succ) => {
+                            if succ {
+                                info!("add success");
+                            } else {
+                                error!("add failed")
+                            }
+                        }
+                        _ => error!("add failed"),
+                    }
+                }
+                Err(_) => error!("error parse peer"),
+            }
+        }
+
+        if let Some(_) = peers_cmd.subcommand_matches("list") {
+            let msg = Msg {
+                inner: ControlMsg::ListPeerRequest,
+            };
+
+            let _result = send_msg(msg, &sock, &ctl_addr);
+
+            let mut buff = vec![0; 4096];
+
+            let _ = sock.recv(&mut buff).unwrap();
+            let msg: Msg = deserialize(&buff).unwrap();
+
+            match msg.inner {
+                ControlMsg::ListPeerReply(peers) => {
+                    let mut table = Table::new();
+                    table.add_row(row!("Name", "IP Address", "MAC Address"));
+
+                    for peer in &peers {
+                        let hw_addr = format!(
+                            "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+                            peer.hw_addr[0],
+                            peer.hw_addr[1],
+                            peer.hw_addr[2],
+                            peer.hw_addr[3],
+                            peer.hw_addr[4],
+                            peer.hw_addr[5],
+                        );
+
+                        table.add_row(row!(peer.name, peer.ctl_addr.to_string(), hw_addr));
+                    }
+
+                    table.printstd();
+                }
+                _ => error!("response error"),
+            }
+        }
+
+        if let Some(remove_peer) = peers_cmd.subcommand_matches("remove") {
+            let peer_name = remove_peer.value_of("peer name").map(|it| it.to_owned());
+            let peer_address = remove_peer
+                .value_of("peer ip address")
+                .and_then(|it| it.parse().ok());
+
+            let msg = Msg {
+                inner: ControlMsg::RemovePeerRequest {
+                    name: peer_name.into(),
+                    addr: peer_address,
+                },
+            };
+
+            let _ = send_msg(msg, &sock, &ctl_addr);
+        }
     }
 }

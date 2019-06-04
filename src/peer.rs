@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::TapDemoError;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Peer {
     pub(crate) name: String,
     pub(crate) ctl_addr: SocketAddr,

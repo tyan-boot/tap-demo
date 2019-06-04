@@ -1,16 +1,17 @@
 use std::env;
 use std::fs::File;
 use std::io::Read;
-use std::net::UdpSocket;
+use std::net::{IpAddr, UdpSocket};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use clap::ArgMatches;
 use log::error;
 
-use crate::discovery::{control_thread, discovery_thread, heartbeats_thread};
+use crate::control::control_thread;
+use crate::discovery::{discovery_thread, heartbeats_thread, init_peers_hw_addr};
 use crate::dispatch::{dispatch_from_peers, DispatchRoutine};
-use crate::error::{AppResult, TapDemoError};
+use crate::error::AppResult;
 use crate::eth::EthV2;
 use crate::peer::Peer;
 use crate::tap::{create_tap as inner_create_tap, TapInfo};
@@ -36,6 +37,26 @@ impl AppState {
             }
             None => peers.push(peer),
         }
+    }
+
+    pub(crate) fn remove_peer(&self, name: Option<String>, addr: Option<IpAddr>) {
+        let mut peers = self.peers.write().unwrap();
+
+        peers.retain(move |it| {
+            let name_eq = if name.is_some() {
+                name.as_ref().unwrap().eq(&it.name)
+            } else {
+                false
+            };
+
+            let addr_eq = if addr.is_some() {
+                addr.as_ref().unwrap().eq(&it.ctl_addr.ip())
+            } else {
+                false
+            };
+
+            !(name_eq | addr_eq)
+        });
     }
 }
 
@@ -77,10 +98,6 @@ pub(crate) fn run(args: &ArgMatches) -> AppResult<()> {
         None => Vec::new(),
     };
 
-    if !is_auto && init_peers.is_empty() {
-        return Err(TapDemoError::PeerEmpty);
-    }
-
     let state = Arc::new(AppState {
         name: env::var("HOSTNAME")
             .or_else(|_| env::var("HOST"))
@@ -107,6 +124,16 @@ pub(crate) fn run(args: &ArgMatches) -> AppResult<()> {
     {
         let state = state.clone();
         control_thread(state);
+    }
+
+    // init peers hw addr
+    {
+        let state = state.clone();
+        let is_empty = { state.peers.read().unwrap().is_empty() };
+
+        if !is_empty {
+            init_peers_hw_addr(state);
+        }
     }
 
     // dispatch from peers
@@ -150,6 +177,4 @@ pub(crate) fn run(args: &ArgMatches) -> AppResult<()> {
             _ => {}
         }
     }
-
-    Ok(())
 }

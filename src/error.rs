@@ -6,7 +6,6 @@ pub enum TapDemoError {
     PeerParseError,
     PeerAddressParseError(String),
     TapSetupError,
-    PeerEmpty,
 
     PeerLost,
     MsgDeserializeError(bincode::Error),

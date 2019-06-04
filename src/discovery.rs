@@ -1,48 +1,25 @@
+use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv4Addr};
-use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use bincode::{deserialize, serialize};
+use lazy_static::lazy_static;
 use log::{debug, error};
-use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::error::{AppResult, TapDemoError};
+use crate::msg::*;
 use crate::peer::Peer;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::convert::TryInto;
 
 lazy_static! {
-    static ref IPV4: IpAddr = Ipv4Addr::new(224, 0, 0, 100).into();
+    pub(crate) static ref IPV4: IpAddr = Ipv4Addr::new(224, 0, 0, 100).into();
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct MsgDiscoveryReply {
-    name: String,
-    hw_addr: [u8; 6],
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Msg {
-    inner: ControlMsg,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-enum ControlMsg {
-    DiscoveryRequest,
-    DiscoveryReply(MsgDiscoveryReply),
-
-    HwAddrRequest,
-    HwAddrReply([u8; 6]),
-
-    Ping,
-    Pong,
-}
-
-fn send_msg(msg: Msg, sock: &Socket, addr: &SockAddr) -> std::io::Result<usize> {
+pub(crate) fn send_msg(msg: Msg, sock: &Socket, addr: &SockAddr) -> std::io::Result<usize> {
     let msg_reply = serialize(&msg).unwrap();
 
     sock.send_to(&msg_reply, &addr)
@@ -71,14 +48,14 @@ fn check_peer(peer: &Peer) -> Result<(), TapDemoError> {
     Err(TapDemoError::PeerLost)
 }
 
-fn new_socket() -> std::io::Result<Socket> {
+pub(crate) fn new_socket() -> std::io::Result<Socket> {
     let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp()))?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
 
     Ok(socket)
 }
 
-fn new_sender() -> std::io::Result<Socket> {
+pub(crate) fn new_sender() -> std::io::Result<Socket> {
     let socket = new_socket()?;
 
     socket.bind(&SockAddr::from(SocketAddr::new(
@@ -174,72 +151,6 @@ pub(crate) fn discovery_thread(state: Arc<AppState>) -> JoinHandle<()> {
             }
 
             std::thread::sleep(Duration::from_secs(60));
-        }
-    })
-}
-
-pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
-    debug!("control_thread start");
-
-    std::thread::spawn(move || {
-        let sock = new_socket().unwrap();
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9909);
-
-        match *IPV4 {
-            IpAddr::V4(ref ipv4) => {
-                sock.join_multicast_v4(ipv4, &Ipv4Addr::new(0, 0, 0, 0))
-                    .unwrap();
-            }
-            IpAddr::V6(_) => unreachable!(),
-        }
-
-        sock.bind(&SockAddr::from(addr)).unwrap();
-
-        let mut buff = vec![0; 512];
-
-        loop {
-            let size_and_addr = sock.recv_from(&mut buff);
-
-            match size_and_addr {
-                Ok((_size, addr)) => {
-                    let msg = deserialize(&buff);
-                    let msg: Msg = msg.unwrap();
-
-                    match msg.inner {
-                        ControlMsg::DiscoveryRequest => {
-                            let msg_reply = Msg {
-                                inner: ControlMsg::DiscoveryReply(MsgDiscoveryReply {
-                                    name: state.name.clone(),
-                                    hw_addr: state.hw_addr,
-                                }),
-                            };
-
-                            let _ = send_msg(msg_reply, &sock, &addr);
-                        }
-                        ControlMsg::HwAddrRequest => {
-                            let msg_reply = Msg {
-                                inner: ControlMsg::HwAddrReply(state.hw_addr),
-                            };
-
-                            let _ = send_msg(msg_reply, &sock, &addr);
-                        }
-                        ControlMsg::Ping => {
-                            let msg_reply = Msg {
-                                inner: ControlMsg::Pong,
-                            };
-
-                            let _ = send_msg(msg_reply, &sock, &addr);
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                Err(e) => match e.kind() {
-                    std::io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    _ => error!("error recv {:?}", e),
-                },
-            }
         }
     })
 }
