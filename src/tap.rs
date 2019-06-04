@@ -5,7 +5,7 @@ use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::time::Duration;
 
 use libc::ioctl;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 static TUN_DEV: &'static str = "/dev/net/tun";
 static IFF_TAP: c_short = 0x0002;

@@ -1,83 +1,28 @@
-#[macro_use]
-extern crate lazy_static;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
-use std::env;
-use std::fs::File;
-use std::io::Read;
-use std::net::{SocketAddr, UdpSocket};
-use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use bincode::deserialize;
+use clap::{App, Arg, SubCommand};
+use log::{error, info};
+use prettytable::{cell, row, Table};
+use socket2::SockAddr;
+
+use crate::app::run;
+use crate::discovery::{new_sender, send_msg};
+use crate::error::TapDemoError;
+use crate::msg::{ControlMsg, Msg};
+use crate::peer::Peer;
+
 use std::time::Duration;
 
-use clap::{App, Arg};
-use log::error;
-
-use crate::discovery::{control_thread, discovery_thread, heartbeats_thread, init_peers_hw_addr};
-use crate::dispatch::{dispatch_from_peers, DispatchRoutine};
-use crate::error::TapDemoError;
-use crate::eth::EthV2;
-use crate::tap::create_tap;
-
+mod app;
+mod control;
 mod discovery;
 mod dispatch;
 mod error;
 mod eth;
+mod msg;
+mod peer;
 mod tap;
-
-#[derive(Debug)]
-pub(crate) struct Peer {
-    name: String,
-    ctl_addr: SocketAddr,
-    data_addr: SocketAddr,
-    hw_addr: [u8; 6],
-}
-
-impl FromStr for Peer {
-    type Err = error::TapDemoError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let pairs: Vec<&str> = s.split("=").collect();
-
-        if pairs.len() != 2 {
-            return Err(TapDemoError::PeerParseError);
-        }
-
-        let ctl_addr: SocketAddr = pairs[1].parse()?;
-        let mut data_addr = ctl_addr.clone();
-        data_addr.set_port(data_addr.port() - 1);
-
-        Ok(Peer {
-            name: pairs[0].to_owned(),
-            ctl_addr,
-            data_addr,
-            hw_addr: [0; 6],
-        })
-    }
-}
-
-pub(crate) struct AppState {
-    name: String,
-    hw_addr: [u8; 6],
-    data_sock: UdpSocket,
-    tap_dev: File,
-    peers: RwLock<Vec<Peer>>,
-}
-
-impl AppState {
-    pub(crate) fn add_peer(&self, peer: Peer) {
-        let mut peers = self.peers.write().unwrap();
-        let p = peers.iter_mut().find(|it| it.ctl_addr.eq(&peer.ctl_addr));
-
-        match p {
-            Some(mut p) => {
-                // update all except addr
-                p.name = peer.name;
-                p.hw_addr = peer.hw_addr
-            }
-            None => peers.push(peer),
-        }
-    }
-}
 
 fn main() {
     simple_logger::init().unwrap();
@@ -86,137 +31,162 @@ fn main() {
         .version("0.1")
         .author("admin@snowstar.org")
         .about("tap tunnel via udp")
-        .arg(
-            Arg::with_name("peers")
-                .help("peers address, eg, peer1=10.0.0.1,peer2=10.0.0.2")
-                .takes_value(true)
-                .required(false)
-                .long("peers")
-                .short("p"),
+        .subcommand(
+            SubCommand::with_name("start")
+                .about("start main loop")
+                .arg(
+                    Arg::with_name("peers")
+                        .help("peers address, eg, peer1=10.0.0.1,peer2=10.0.0.2")
+                        .takes_value(true)
+                        .required(false)
+                        .long("peers")
+                        .short("p"),
+                )
+                .arg(
+                    Arg::with_name("auto")
+                        .help("auto discovery peers in lan")
+                        .long("auto")
+                        .short("a"),
+                ),
         )
-        .arg(
-            Arg::with_name("auto")
-                .help("auto discovery peers in lan")
-                .long("auto")
-                .short("a"),
+        .subcommand(
+            SubCommand::with_name("peers")
+                .about("peers manage")
+                .subcommand(SubCommand::with_name("list").about("list peers"))
+                .subcommand(
+                    SubCommand::with_name("add")
+                        .about("add peer")
+                        .arg(
+                            Arg::with_name("peer name")
+                                .takes_value(true)
+                                .required(true)
+                                .help("eg, peer-01"),
+                        )
+                        .arg(
+                            Arg::with_name("peer address")
+                                .takes_value(true)
+                                .required(true)
+                                .help("eg, 10.0.0.1:9909"),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("remove")
+                        .about("remove peer")
+                        .arg(
+                            Arg::with_name("peer name")
+                                .short("n")
+                                .long("name")
+                                .help("peer name")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("peer ip address")
+                                .short("h")
+                                .long("host")
+                                .help("peer ip address")
+                                .takes_value(true),
+                        ),
+                ),
         )
-        .arg(Arg::with_name("discovery").short("d"))
         .get_matches();
 
-    let is_auto = matches.is_present("auto");
-
-    // create tap
-    let tap_info = create_tap("tap0");
-    if tap_info.is_err() {
-        error!("error create tap device {:?}", tap_info);
+    if let Some(arg) = matches.subcommand_matches("start") {
+        run(arg);
         return;
     }
-    let tap_info = tap_info.unwrap();
 
-    let data_sock = UdpSocket::bind("0.0.0.0:9908").unwrap();
-    data_sock
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
+    if let Some(peers_cmd) = matches.subcommand_matches("peers") {
+        let ctl_addr = SockAddr::from(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9909));
+        let sock = new_sender().unwrap();
 
-    let state = Arc::new(AppState {
-        name: env::var("HOSTNAME")
-            .or_else(|_| env::var("HOST"))
-            .unwrap_or("peer-01".to_owned()),
-        data_sock,
-        tap_dev: tap_info.tap_dev,
-        hw_addr: tap_info.hw_addr,
-        peers: RwLock::new(Vec::new()),
-    });
+        if let Some(add_peer) = peers_cmd.subcommand_matches("add") {
+            let peer_name = add_peer.value_of("peer name").unwrap();
+            let peer_address = add_peer.value_of("peer address").unwrap();
 
-    // try init peers
-    if let Some(peers_str) = matches.value_of("peers") {
-        let peers_str: Vec<&str> = peers_str.split(",").collect();
+            let peer: Result<Peer, TapDemoError> =
+                format!("{}={}", peer_name, peer_address).parse();
 
-        let peers: Vec<Peer> = peers_str
-            .into_iter()
-            .map(|it| {
-                let peer = it.parse();
+            match peer {
+                Ok(peer) => {
+                    let msg = Msg {
+                        inner: ControlMsg::AddPeerRequest(peer),
+                    };
 
-                peer.unwrap()
-            })
-            .collect();
-        state.peers.write().unwrap().extend(peers);
-    }
+                    let _ = send_msg(msg, &sock, &ctl_addr);
 
-    {
-        if !is_auto && state.peers.read().unwrap().is_empty() {
-            error!("peers is empty and `auto` is not set");
-            return;
-        }
-    }
+                    let mut buff = vec![0; 512];
+                    sock.set_read_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    let _ = sock.recv(&mut buff).unwrap();
 
-    // heartbeats thread
-    {
-        let state = state.clone();
-        heartbeats_thread(state);
-    }
+                    let msg: Msg = deserialize(&buff).unwrap();
 
-    // discovery thread
-    if is_auto {
-        let state = state.clone();
-        discovery_thread(state);
-    }
-
-    // control thread
-    {
-        let state = state.clone();
-        control_thread(state);
-    }
-
-    // init peers hw addr
-    {
-        let state = state.clone();
-        let is_empty = { state.peers.read().unwrap().is_empty() };
-
-        if !is_empty {
-            init_peers_hw_addr(state);
-        }
-    }
-
-    // dispatch from peers
-    {
-        let state = state.clone();
-        std::thread::spawn(move || dispatch_from_peers(state));
-    }
-
-    let mut buff = vec![0; 1500];
-    let dispatch_routine = DispatchRoutine(state.clone());
-
-    loop {
-        let mut tap_dev = &state.tap_dev;
-
-        let size = tap_dev.read(&mut buff);
-
-        if size.is_err() {
-            continue;
+                    match msg.inner {
+                        ControlMsg::AddPeerReply(succ) => {
+                            if succ {
+                                info!("add success");
+                            } else {
+                                error!("add failed")
+                            }
+                        }
+                        _ => error!("add failed"),
+                    }
+                }
+                Err(_) => error!("error parse peer"),
+            }
         }
 
-        let mut dst_mac = [0; 6];
-        dst_mac.copy_from_slice(&buff[0..6]);
+        if let Some(_) = peers_cmd.subcommand_matches("list") {
+            let msg = Msg {
+                inner: ControlMsg::ListPeerRequest,
+            };
 
-        let mut src_mac = [0; 6];
-        src_mac.copy_from_slice(&buff[6..12]);
+            let _result = send_msg(msg, &sock, &ctl_addr);
 
-        let mut proto_type = [0; 2];
-        proto_type.copy_from_slice(&buff[12..14]);
+            let mut buff = vec![0; 4096];
 
-        let eth = EthV2 {
-            dst_mac,
-            src_mac,
-            proto_type: u16::from_be_bytes(proto_type),
-            data: buff.clone(),
-        };
+            let _ = sock.recv(&mut buff).unwrap();
+            let msg: Msg = deserialize(&buff).unwrap();
 
-        let result = dispatch_routine.dispatch_to_peers(eth);
+            match msg.inner {
+                ControlMsg::ListPeerReply(peers) => {
+                    let mut table = Table::new();
+                    table.add_row(row!("Name", "IP Address", "MAC Address"));
 
-        match result {
-            Err(e) => error!("error dispatch to peers, {:?}", e),
-            _ => {}
+                    for peer in &peers {
+                        let hw_addr = format!(
+                            "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+                            peer.hw_addr[0],
+                            peer.hw_addr[1],
+                            peer.hw_addr[2],
+                            peer.hw_addr[3],
+                            peer.hw_addr[4],
+                            peer.hw_addr[5],
+                        );
+
+                        table.add_row(row!(peer.name, peer.ctl_addr.to_string(), hw_addr));
+                    }
+
+                    table.printstd();
+                }
+                _ => error!("response error"),
+            }
+        }
+
+        if let Some(remove_peer) = peers_cmd.subcommand_matches("remove") {
+            let peer_name = remove_peer.value_of("peer name").map(|it| it.to_owned());
+            let peer_address = remove_peer
+                .value_of("peer ip address")
+                .and_then(|it| it.parse().ok());
+
+            let msg = Msg {
+                inner: ControlMsg::RemovePeerRequest {
+                    name: peer_name.into(),
+                    addr: peer_address,
+                },
+            };
+
+            let _ = send_msg(msg, &sock, &ctl_addr);
         }
     }
 }
