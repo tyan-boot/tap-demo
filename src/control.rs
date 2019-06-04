@@ -10,8 +10,7 @@ use crate::app::AppState;
 use crate::discovery::new_socket;
 use crate::discovery::send_msg;
 use crate::discovery::IPV4;
-
-use crate::discovery::init_peer_hw_addr;
+use crate::discovery::{init_peer_hw_addr, scan_node};
 use crate::msg::*;
 
 pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
@@ -97,6 +96,27 @@ pub(crate) fn control_thread(state: Arc<AppState>) -> JoinHandle<()> {
 
                             let msg_reply = Msg {
                                 inner: ControlMsg::RemovePeerReply(true),
+                            };
+
+                            let _ = send_msg(msg_reply, &sock, &src_addr);
+                        }
+                        ControlMsg::ScanNodeRequest => {
+                            let peers = {
+                                let state = Arc::clone(&state);
+                                scan_node(state)
+                            };
+
+                            let msg_reply = match peers {
+                                Ok(peers) => {
+                                    state.add_peers(peers.clone());
+
+                                    Msg {
+                                        inner: ControlMsg::ScanNodeReply(peers),
+                                    }
+                                }
+                                Err(_) => Msg {
+                                    inner: ControlMsg::ScanNodeReply(Vec::new()),
+                                },
                             };
 
                             let _ = send_msg(msg_reply, &sock, &src_addr);

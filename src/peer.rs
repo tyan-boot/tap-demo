@@ -25,9 +25,10 @@ impl FromStr for Peer {
 
         let socket_addrs = pairs[1].to_socket_addrs()?;
 
-        let ctl_addr = socket_addrs.into_iter().find(|it| {
-            it.is_ipv4()
-        }).ok_or(TapDemoError::PeerParseError)?;
+        let ctl_addr = socket_addrs
+            .into_iter()
+            .find(|it| it.is_ipv4())
+            .ok_or(TapDemoError::PeerParseError)?;
 
         let mut data_addr = ctl_addr.clone();
         data_addr.set_port(data_addr.port() - 1);

@@ -24,6 +24,27 @@ mod msg;
 mod peer;
 mod tap;
 
+fn display_peers(peers: &Vec<Peer>) {
+    let mut table = Table::new();
+    table.add_row(row!("Name", "IP Address", "MAC Address"));
+
+    for peer in peers {
+        let hw_addr = format!(
+            "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+            peer.hw_addr[0],
+            peer.hw_addr[1],
+            peer.hw_addr[2],
+            peer.hw_addr[3],
+            peer.hw_addr[4],
+            peer.hw_addr[5],
+        );
+
+        table.add_row(row!(peer.name, peer.ctl_addr.to_string(), hw_addr));
+    }
+
+    table.printstd();
+}
+
 fn main() {
     simple_logger::init().unwrap();
 
@@ -86,7 +107,8 @@ fn main() {
                                 .help("peer ip address")
                                 .takes_value(true),
                         ),
-                ),
+                )
+                .subcommand(SubCommand::with_name("scan").about("scan nodes")),
         )
         .get_matches();
 
@@ -150,24 +172,7 @@ fn main() {
 
             match msg.inner {
                 ControlMsg::ListPeerReply(peers) => {
-                    let mut table = Table::new();
-                    table.add_row(row!("Name", "IP Address", "MAC Address"));
-
-                    for peer in &peers {
-                        let hw_addr = format!(
-                            "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
-                            peer.hw_addr[0],
-                            peer.hw_addr[1],
-                            peer.hw_addr[2],
-                            peer.hw_addr[3],
-                            peer.hw_addr[4],
-                            peer.hw_addr[5],
-                        );
-
-                        table.add_row(row!(peer.name, peer.ctl_addr.to_string(), hw_addr));
-                    }
-
-                    table.printstd();
+                    display_peers(&peers);
                 }
                 _ => error!("response error"),
             }
@@ -187,6 +192,28 @@ fn main() {
             };
 
             let _ = send_msg(msg, &sock, &ctl_addr);
+        }
+
+        if let Some(_) = peers_cmd.subcommand_matches("scan") {
+            sock.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+
+            let msg = Msg {
+                inner: ControlMsg::ScanNodeRequest,
+            };
+
+            let _ = send_msg(msg, &sock, &ctl_addr);
+
+            let mut buff = vec![0; 4096];
+            let _ = sock.recv(&mut buff).unwrap();
+            let msg: Msg = deserialize(&buff).unwrap();
+
+            match msg.inner {
+                ControlMsg::ScanNodeReply(peers) => {
+                    display_peers(&peers);
+                }
+                _ => error!("response error"),
+            }
         }
     }
 }

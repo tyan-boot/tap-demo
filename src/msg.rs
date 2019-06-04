@@ -36,4 +36,7 @@ pub(crate) enum ControlMsg {
         addr: Option<IpAddr>,
     },
     RemovePeerReply(bool),
+
+    ScanNodeRequest,
+    ScanNodeReply(Vec<Peer>),
 }

@@ -12,7 +12,7 @@ pub(crate) struct DispatchRoutine(pub(crate) Arc<AppState>);
 impl DispatchRoutine {
     /// dispatch packet to peers
     pub(crate) fn dispatch_to_peers(&self, eth: EthV2) -> Result<(), TapDemoError> {
-        let peers = self.0.peers.write().unwrap();
+        let peers = self.0.peers.read().unwrap();
         // for brd
         if eth.dst_mac == [255, 255, 255, 255, 255, 255] {
             for peer in &*peers {
